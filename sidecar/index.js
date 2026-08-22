@@ -158,6 +158,14 @@ async function bootSession(sessionId) {
           Object.defineProperty(p, '_serialized', {
             get() { return this.$1; },
             configurable: true,
+            // enumerable: true is required — whatsapp-web.js's own internal
+            // Message/Chat serialize() copies MsgKey's own enumerable
+            // properties into a plain object (e.g. via spread/Object.keys)
+            // before it ever crosses into Node. A non-enumerable getter is
+            // invisible to that copy, so downstream Node-side code (e.g.
+            // Message.downloadMedia()'s `this.id._serialized`) sees
+            // `undefined` even though this session's patch is "ok".
+            enumerable: true,
           });
         }
         return 'ok';
@@ -332,7 +340,7 @@ app.post('/sessions/:id/messages', async (req, res, next) => {
         break;
 
       case 'reaction': {
-        const msg = await s.client.getMessageById(b.messageId);
+        const msg = await getMessageByIdPatched(s.client, b.messageId);
         await msg.react(b.emoji ?? '');
         result = { ok: true };
         break;
@@ -348,15 +356,55 @@ app.post('/sessions/:id/messages', async (req, res, next) => {
 
 // Download a message's media bytes (image/video/audio/document/sticker).
 // Streams back with the original mime + filename so <img src=>, <audio src=>, etc. work.
+//
+// Deliberately does NOT use whatsapp-web.js's own `Message.downloadMedia()`
+// (node_modules/whatsapp-web.js/src/structures/Message.js) — that method
+// calls `this.client.pupPage.evaluate(fn, this.id._serialized)`, and
+// `this.id` comes from WhatsApp's own internal `message.serialize()` output
+// rather than a live MsgKey instance. Even with our MsgKey._serialized
+// patch made enumerable (see the `ready` handler above), the resulting
+// plain-object `.id` still doesn't reliably carry a working `_serialized`
+// across that Node↔browser boundary, so `this.id._serialized` comes out
+// undefined and the WA-internal message lookup throws a minified "r: r".
+// We already have a known-good string message ID from the URL itself, so
+// we replicate WWebJS's own download recipe (same internal APIs) directly
+// in our own evaluate, passing that string straight through — no MsgKey
+// involved at all. This also survives `npm install`/composer update since
+// it lives in our tracked index.js, not in node_modules.
 app.get('/sessions/:id/messages/:messageId/media', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const msg = await s.client.getMessageById(req.params.messageId);
-    if (!msg || !msg.hasMedia) {
-      return res.status(404).json({ error: 'no media for this message' });
-    }
-    const media = await msg.downloadMedia();
+    const media = await s.client.pupPage.evaluate(async (msgId) => {
+      const msg = window.require('WAWebCollections').Msg.get(msgId)
+        || (await window.require('WAWebCollections').Msg.getMessagesById([msgId]))?.messages?.[0];
+
+      if (!msg || !msg.mediaData || msg.mediaData.mediaStage === 'REUPLOADING') return null;
+
+      if (msg.mediaData.mediaStage !== 'RESOLVED') {
+        await msg.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1 });
+      }
+      if (msg.mediaData.mediaStage.includes('ERROR') || msg.mediaData.mediaStage === 'FETCHING') return null;
+
+      const mockQpl = {
+        addAnnotations() { return this; },
+        addPoint() { return this; },
+      };
+      const decryptedMedia = await window.require('WAWebDownloadManager').downloadManager.downloadAndMaybeDecrypt({
+        directPath: msg.directPath,
+        encFilehash: msg.encFilehash,
+        filehash: msg.filehash,
+        mediaKey: msg.mediaKey,
+        mediaKeyTimestamp: msg.mediaKeyTimestamp,
+        type: msg.type,
+        signal: new AbortController().signal,
+        downloadQpl: mockQpl,
+      });
+
+      const data = await window.WWebJS.arrayBufferToBase64Async(decryptedMedia);
+      return { data, mimetype: msg.mimetype, filename: msg.filename };
+    }, req.params.messageId);
+
     if (!media || !media.data) {
       return res.status(404).json({ error: 'media download failed (may have expired on WhatsApp servers)' });
     }
@@ -369,11 +417,28 @@ app.get('/sessions/:id/messages/:messageId/media', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// `client.getMessageById()` returns a Message whose `.id` is a plain object
+// (built from WhatsApp's internal message.serialize(), not a live MsgKey
+// instance) — it carries `$1` but never `_serialized`. Message.js's own
+// methods (delete/edit/forward/react/downloadMedia/etc.) all internally call
+// `this.client.pupPage.evaluate(fn, this.id._serialized)`, which comes out
+// `undefined` and crashes WhatsApp's internal lookup with a minified "r: r".
+// Patching it here (Node-side, own enumerable property, no CDP boundary
+// concerns since we're just passing the resulting string into evaluate())
+// fixes every Message method uniformly instead of special-casing each one.
+async function getMessageByIdPatched(client, messageId) {
+  const msg = await client.getMessageById(messageId);
+  if (msg?.id && msg.id._serialized == null && msg.id.$1) {
+    msg.id._serialized = msg.id.$1;
+  }
+  return msg;
+}
+
 app.post('/sessions/:id/messages/:messageId/delete', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const msg = await s.client.getMessageById(req.params.messageId);
+    const msg = await getMessageByIdPatched(s.client, req.params.messageId);
     await msg.delete(req.body?.forEveryone === true);
     res.json({ ok: true });
   } catch (e) { next(e); }
@@ -566,7 +631,7 @@ app.post('/sessions/:id/messages/:messageId/edit', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const msg = await s.client.getMessageById(req.params.messageId);
+    const msg = await getMessageByIdPatched(s.client, req.params.messageId);
     if (!msg) return res.status(404).json({ error: 'message not found' });
     const body = req.body?.body ?? '';
     const result = await msg.edit(body);
@@ -631,6 +696,7 @@ app.get('/sessions/:id/events', (req, res, next) => {
 
 // Centralized error handler — turns thrown { http } errors into HTTP responses.
 app.use((err, _req, res, _next) => {
+  console.error(err.stack || err.message);
   const status = err.http || 500;
   res.status(status).json({ error: err.message || 'internal error' });
 });
