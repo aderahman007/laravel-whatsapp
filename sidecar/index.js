@@ -94,6 +94,7 @@ function serializeMessage(m) {
     fromMe: m.fromMe,
     author: m.author,
     deviceType: m.deviceType,
+    ack: m.ack ?? null,
   };
 }
 
