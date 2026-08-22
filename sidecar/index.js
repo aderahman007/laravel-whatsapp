@@ -395,6 +395,32 @@ app.get('/sessions/:id/chats', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Backfill history for a chat straight from WhatsApp (not the local DB).
+// Optional ?sync=true first asks WhatsApp Web to sync more history down from
+// the phone before reading it — per wwebjs docs this is best-effort and can
+// be slow/non-deterministic, so failures here are swallowed rather than
+// failing the whole request; we still try fetchMessages() afterwards.
+app.get('/sessions/:id/chats/:chatId/messages', async (req, res, next) => {
+  try {
+    const s = getSession(req.params.id);
+    requireReady(s);
+    const chat = await s.client.getChatById(req.params.chatId);
+    if (!chat) return res.status(404).json({ error: 'chat not found' });
+
+    if (String(req.query.sync).toLowerCase() === 'true') {
+      try {
+        await chat.syncHistory();
+      } catch (e) {
+        console.error(`[laravel-wa-sidecar] syncHistory failed for ${req.params.chatId}: ${e.message}`);
+      }
+    }
+
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const messages = await chat.fetchMessages({ limit });
+    res.json({ messages: messages.map(serializeMessage) });
+  } catch (e) { next(e); }
+});
+
 app.get('/sessions/:id/groups', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);

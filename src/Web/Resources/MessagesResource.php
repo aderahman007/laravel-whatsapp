@@ -148,6 +148,24 @@ class MessagesResource extends Resource
     }
 
     /**
+     * Backfill message history for a chat straight from WhatsApp, bypassing
+     * the locally-persisted `wa_messages` table entirely. Optionally asks
+     * WhatsApp Web to sync more history down from the phone first.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function history(string $chatId, int $limit = 50, bool $sync = false): array
+    {
+        $response = $this->request(
+            'GET',
+            "sessions/{$this->sessionId}/chats/".rawurlencode($chatId).'/messages',
+            ['query' => array_filter(['limit' => $limit, 'sync' => $sync ? 'true' : null])],
+        );
+
+        return $response['messages'] ?? [];
+    }
+
+    /**
      * @param  array<string, mixed>  $media
      * @return array<string, mixed>
      */
