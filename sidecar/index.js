@@ -75,7 +75,13 @@ function broadcast(sessionId, event, data) {
 function serializeMessage(m) {
   if (!m) return null;
   return {
-    id: m.id?._serialized ?? null,
+    // `m.id` is a MsgKey — the one WID-like type WhatsApp Web's July 2026
+    // update renamed `_serialized` to `$1` on. Unlike Wid (chat.id/contact.id,
+    // unaffected), and unlike getChats() (patched via a page-context prototype
+    // getter), this object crosses the Puppeteer CDP boundary into Node for
+    // event listeners like this one — prototype getters don't survive that
+    // boundary, only the own `$1` property does. Fall back to it here.
+    id: m.id?._serialized ?? m.id?.$1 ?? null,
     from: m.from,
     to: m.to,
     body: m.body,
@@ -128,8 +134,39 @@ async function bootSession(sessionId) {
     broadcast(sessionId, 'auth_failure', { message: msg });
   });
 
-  client.on('ready', () => {
+  client.on('ready', async () => {
     session.status = 'ready';
+
+    // Workaround for a WhatsApp Web update (~July 2026) that minified
+    // MsgKey's `_serialized` property to `$1`, breaking getChats()/
+    // fetchMessages()/sendMessage(media) with a cryptic minified "r: r" /
+    // "t: t" crash (whatsapp-web.js is unaffected in Wid objects — only
+    // MsgKey). Community fix from wwebjs/whatsapp-web.js#201862 (not yet
+    // merged upstream as of PR #201871, which doesn't cover this exact
+    // getChats() call site per that issue's comments). Safe to remove once
+    // whatsapp-web.js ships an official fix.
+    try {
+      const patched = await client.pupPage.evaluate(() => {
+        // This whatsapp-web.js version exposes internals via window.require(moduleId)
+        // (moduleRaid), not a window.Store global — WAWebMsgKey is the constructor
+        // used for chat.lastReceivedKey / msg.id, confirmed by its own Utils.js
+        // calling `new (window.require('WAWebMsgKey'))(...)`.
+        const MsgKey = window.require && window.require('WAWebMsgKey');
+        const p = MsgKey && MsgKey.prototype;
+        if (!p) return 'WAWebMsgKey not found';
+        if (!('_serialized' in p)) {
+          Object.defineProperty(p, '_serialized', {
+            get() { return this.$1; },
+            configurable: true,
+          });
+        }
+        return 'ok';
+      });
+      console.log(`[laravel-wa-sidecar] MsgKey._serialized patch for session ${sessionId}: ${patched}`);
+    } catch (e) {
+      console.error(`[laravel-wa-sidecar] MsgKey._serialized patch failed for session ${sessionId}: ${e.message}`);
+    }
+
     broadcast(sessionId, 'ready', {});
   });
 
@@ -140,7 +177,7 @@ async function bootSession(sessionId) {
 
   client.on('message', (m) => broadcast(sessionId, 'message', { message: serializeMessage(m) }));
   client.on('message_create', (m) => broadcast(sessionId, 'message_create', { message: serializeMessage(m) }));
-  client.on('message_ack', (m, ack) => broadcast(sessionId, 'message_ack', { id: m.id?._serialized, ack }));
+  client.on('message_ack', (m, ack) => broadcast(sessionId, 'message_ack', { id: m.id?._serialized ?? m.id?.$1 ?? null, ack }));
   client.on('message_revoke_everyone', (after, before) => broadcast(sessionId, 'message_revoke', {
     after: serializeMessage(after),
     before: serializeMessage(before),

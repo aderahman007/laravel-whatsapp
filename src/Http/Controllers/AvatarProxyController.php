@@ -34,7 +34,7 @@ class AvatarProxyController extends Controller
         }
 
         if (is_array($cached) && isset($cached['body'])) {
-            return new Response($cached['body'], 200, [
+            return new Response(base64_decode($cached['body']), 200, [
                 'Content-Type' => $cached['content_type'],
                 'Cache-Control' => 'private, max-age=1800',
                 'X-Avatar-Cache' => 'HIT',
@@ -49,9 +49,14 @@ class AvatarProxyController extends Controller
             return $this->emptyResponse();
         }
 
+        // Cache stores use a text column (e.g. Laravel's default `cache` table
+        // is mediumtext/utf8mb4) — raw binary image bytes contain invalid UTF-8
+        // sequences and get rejected by MySQL (1366 "Incorrect string value").
+        // base64 keeps it a plain ASCII string so it's safe across any cache
+        // store/driver.
         Cache::put($cacheKey, [
             'content_type' => $contentType,
-            'body' => $body,
+            'body' => base64_encode($body),
         ], self::CACHE_TTL);
 
         return new Response($body, 200, [
