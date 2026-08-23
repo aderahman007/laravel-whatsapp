@@ -5,6 +5,7 @@ namespace Kstmostofa\LaravelWhatsApp;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use Kstmostofa\LaravelWhatsApp\Client\CloudClient;
+use Kstmostofa\LaravelWhatsApp\Client\CloudClientFactory;
 use Kstmostofa\LaravelWhatsApp\Console\Commands\HealthCheckCommand;
 use Kstmostofa\LaravelWhatsApp\Console\Commands\SidecarInstallCommand;
 use Kstmostofa\LaravelWhatsApp\Console\Commands\SidecarStartCommand;
@@ -36,6 +37,8 @@ class LaravelWhatsAppServiceProvider extends ServiceProvider
         });
 
         $this->app->alias(CloudClient::class, 'whatsapp');
+
+        $this->app->singleton(CloudClientFactory::class);
 
         $this->app->singleton(SidecarManager::class, function ($app) {
             return new SidecarManager($app['config']->get('laravel-whatsapp.web'));

@@ -20,8 +20,12 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  */
 class MediaProxyController extends Controller
 {
+    use \App\Support\AuthorizesWaSession;
+
     public function show(Request $request, string $session, string $messageId, WebClient $client): StreamedResponse
     {
+        $this->authorizeSession($session);
+
         $url = sprintf(
             'http://%s:%d/sessions/%s/messages/%s/media',
             $client->host(),

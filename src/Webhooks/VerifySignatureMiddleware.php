@@ -5,16 +5,26 @@ namespace Kstmostofa\LaravelWhatsApp\Webhooks;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Kstmostofa\LaravelWhatsApp\Models\WaCloudAccount;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Verifies Meta's X-Hub-Signature-256 header against the raw request body using
- * the configured app_secret. Skips verification entirely when `verify_signature`
- * is disabled (useful for local testing with ngrok).
+ * Verifies Meta's X-Hub-Signature-256 header against the raw request body.
+ * Skips verification entirely when `verify_signature` is disabled (useful
+ * for local testing with ngrok).
  *
- * Fail-closed: if verification is enabled but APP_SECRET isn't configured, we
- * return 503 rather than letting unverified payloads through. The 503 also
- * triggers Meta to retry the delivery once the secret is set.
+ * Multi-account: each `wa_cloud_accounts` row can have its own app_secret
+ * (a separate Meta app/WABA), and Meta's webhook payload itself doesn't say
+ * which account it's for until AFTER the body is parsed — so instead of
+ * picking one secret up front, this tries the legacy `.env` secret plus
+ * every registered account's secret and accepts the first match. Account
+ * counts here are expected to be small (a handful, not thousands), so the
+ * O(n) HMAC comparisons are cheap.
+ *
+ * Fail-closed: if verification is enabled but no secret (legacy or
+ * per-account) is configured at all, we return 503 rather than letting
+ * unverified payloads through. The 503 also triggers Meta to retry once a
+ * secret is set.
  */
 class VerifySignatureMiddleware
 {
@@ -26,12 +36,15 @@ class VerifySignatureMiddleware
             return $next($request);
         }
 
-        $secret = $config['app_secret'] ?? null;
+        $secrets = array_filter([
+            $config['app_secret'] ?? null,
+            ...WaCloudAccount::query()->pluck('app_secret')->all(),
+        ]);
 
-        if (! $secret) {
-            Log::error('laravel-whatsapp: webhook signature verification enabled but WHATSAPP_APP_SECRET is not set — rejecting inbound webhook');
+        if (empty($secrets)) {
+            Log::error('laravel-whatsapp: webhook signature verification enabled but no app_secret is configured (neither WHATSAPP_APP_SECRET nor any wa_cloud_accounts row) — rejecting inbound webhook');
 
-            return new \Illuminate\Http\Response('service misconfigured: WHATSAPP_APP_SECRET missing', 503);
+            return new \Illuminate\Http\Response('service misconfigured: no app_secret configured', 503);
         }
 
         $header = $request->header('X-Hub-Signature-256', '');
@@ -40,12 +53,14 @@ class VerifySignatureMiddleware
         }
 
         $expected = substr($header, 7);
-        $computed = hash_hmac('sha256', $request->getContent(), $secret);
+        $body = $request->getContent();
 
-        if (! hash_equals($expected, $computed)) {
-            return new \Illuminate\Http\Response('invalid signature', 401);
+        foreach ($secrets as $secret) {
+            if (hash_equals($expected, hash_hmac('sha256', $body, $secret))) {
+                return $next($request);
+            }
         }
 
-        return $next($request);
+        return new \Illuminate\Http\Response('invalid signature', 401);
     }
 }

@@ -7,6 +7,7 @@ use Kstmostofa\LaravelWhatsApp\Models\Concerns\UsesWhatsAppConnection;
 
 /**
  * @property string $id
+ * @property ?int $user_id  owner — null means unclaimed (see SessionsController::claim())
  * @property string $backend  'web' | 'cloud'
  * @property string $status
  * @property ?string $phone_number
@@ -43,6 +44,11 @@ class WaSession extends Model
     public function contacts()
     {
         return $this->hasMany(WaContact::class, 'session_id');
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(\App\Models\User::class);
     }
 
     public function isReady(): bool

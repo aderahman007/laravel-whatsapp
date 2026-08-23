@@ -20,11 +20,15 @@ use Symfony\Component\HttpFoundation\Response;
  */
 class AvatarProxyController extends Controller
 {
+    use \App\Support\AuthorizesWaSession;
+
     protected const CACHE_TTL = 1800; // 30 minutes
     protected const MISS_MARKER = '__no_avatar__';
 
     public function show(string $session, string $contactId, WebClient $client): Response
     {
+        $this->authorizeSession($session);
+
         $cacheKey = sprintf('laravel-whatsapp:avatar:%s:%s', $session, sha1($contactId));
 
         $cached = Cache::get($cacheKey);
