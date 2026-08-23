@@ -381,39 +381,59 @@ app.post('/sessions/:id/messages', async (req, res, next) => {
 // in our own evaluate, passing that string straight through — no MsgKey
 // involved at all. This also survives `npm install`/composer update since
 // it lives in our tracked index.js, not in node_modules.
+// A message viewed moments after we send it (e.g. Compose → sync-history →
+// open chat, all within a couple seconds) can still be mid-upload on
+// WhatsApp's own side — `mediaData.mediaStage` isn't `RESOLVED` yet, and
+// calling `msg.downloadMedia()` in that window throws a minified WA-internal
+// error ("t: t" / "r: r", varies by build) instead of a clean 404/425. This
+// is a timing race, not a permanent failure — the same message reliably
+// downloads fine a couple seconds later. Retry a few times before giving up.
+async function downloadMessageMedia(pupPage, msgId, { attempts = 3, delayMs = 800 } = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await pupPage.evaluate(async (msgId) => {
+        const msg = window.require('WAWebCollections').Msg.get(msgId)
+          || (await window.require('WAWebCollections').Msg.getMessagesById([msgId]))?.messages?.[0];
+
+        if (!msg || !msg.mediaData || msg.mediaData.mediaStage === 'REUPLOADING') return null;
+
+        if (msg.mediaData.mediaStage !== 'RESOLVED') {
+          await msg.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1 });
+        }
+        if (msg.mediaData.mediaStage.includes('ERROR') || msg.mediaData.mediaStage === 'FETCHING') return null;
+
+        const mockQpl = {
+          addAnnotations() { return this; },
+          addPoint() { return this; },
+        };
+        const decryptedMedia = await window.require('WAWebDownloadManager').downloadManager.downloadAndMaybeDecrypt({
+          directPath: msg.directPath,
+          encFilehash: msg.encFilehash,
+          filehash: msg.filehash,
+          mediaKey: msg.mediaKey,
+          mediaKeyTimestamp: msg.mediaKeyTimestamp,
+          type: msg.type,
+          signal: new AbortController().signal,
+          downloadQpl: mockQpl,
+        });
+
+        const data = await window.WWebJS.arrayBufferToBase64Async(decryptedMedia);
+        return { data, mimetype: msg.mimetype, filename: msg.filename };
+      }, msgId);
+    } catch (e) {
+      lastError = e;
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw Object.assign(lastError || new Error('media not ready yet, try again shortly'), { http: 503 });
+}
+
 app.get('/sessions/:id/messages/:messageId/media', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const media = await s.client.pupPage.evaluate(async (msgId) => {
-      const msg = window.require('WAWebCollections').Msg.get(msgId)
-        || (await window.require('WAWebCollections').Msg.getMessagesById([msgId]))?.messages?.[0];
-
-      if (!msg || !msg.mediaData || msg.mediaData.mediaStage === 'REUPLOADING') return null;
-
-      if (msg.mediaData.mediaStage !== 'RESOLVED') {
-        await msg.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1 });
-      }
-      if (msg.mediaData.mediaStage.includes('ERROR') || msg.mediaData.mediaStage === 'FETCHING') return null;
-
-      const mockQpl = {
-        addAnnotations() { return this; },
-        addPoint() { return this; },
-      };
-      const decryptedMedia = await window.require('WAWebDownloadManager').downloadManager.downloadAndMaybeDecrypt({
-        directPath: msg.directPath,
-        encFilehash: msg.encFilehash,
-        filehash: msg.filehash,
-        mediaKey: msg.mediaKey,
-        mediaKeyTimestamp: msg.mediaKeyTimestamp,
-        type: msg.type,
-        signal: new AbortController().signal,
-        downloadQpl: mockQpl,
-      });
-
-      const data = await window.WWebJS.arrayBufferToBase64Async(decryptedMedia);
-      return { data, mimetype: msg.mimetype, filename: msg.filename };
-    }, req.params.messageId);
+    const media = await downloadMessageMedia(s.client.pupPage, req.params.messageId);
 
     if (!media || !media.data) {
       return res.status(404).json({ error: 'media download failed (may have expired on WhatsApp servers)' });
