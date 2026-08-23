@@ -187,6 +187,15 @@ async function bootSession(sessionId) {
   client.on('message', (m) => broadcast(sessionId, 'message', { message: serializeMessage(m) }));
   client.on('message_create', (m) => broadcast(sessionId, 'message_create', { message: serializeMessage(m) }));
   client.on('message_ack', (m, ack) => broadcast(sessionId, 'message_ack', { id: m.id?._serialized ?? m.id?.$1 ?? null, ack }));
+  client.on('message_reaction', (r) => broadcast(sessionId, 'message_reaction', {
+    // `r.msgId`/`r.id` are plain objects (crossed the CDP boundary via
+    // exposeFunction, same as message.id elsewhere) — carry `$1` but not a
+    // working `_serialized` getter. `r.senderId` is already a plain string.
+    targetMessageId: r.msgId?._serialized ?? r.msgId?.$1 ?? null,
+    emoji: r.reaction ?? '',
+    senderId: typeof r.senderId === 'string' ? r.senderId : (r.senderId?._serialized ?? r.senderId?.$1 ?? null),
+    timestamp: r.timestamp,
+  }));
   client.on('message_revoke_everyone', (after, before) => broadcast(sessionId, 'message_revoke', {
     after: serializeMessage(after),
     before: serializeMessage(before),

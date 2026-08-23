@@ -19,6 +19,7 @@ use Kstmostofa\LaravelWhatsApp\Models\Concerns\UsesWhatsAppConnection;
  * @property ?array $payload
  * @property ?string $status
  * @property ?int $ack    whatsapp-web.js ack level: -1 error, 0 pending, 1 server, 2 device, 3 read, 4 played
+ * @property ?array $reactions  map of senderId => emoji
  * @property ?\Illuminate\Support\Carbon $wa_timestamp
  */
 class WaMessage extends Model
@@ -32,6 +33,7 @@ class WaMessage extends Model
     protected $casts = [
         'payload' => 'array',
         'ack' => 'integer',
+        'reactions' => 'array',
         'wa_timestamp' => 'datetime',
         'deleted_at' => 'datetime',
         'deleted_for_everyone' => 'boolean',
