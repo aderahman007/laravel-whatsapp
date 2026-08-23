@@ -207,6 +207,7 @@ async function bootSession(sessionId) {
   // Don't await — initialize() resolves only after 'ready'. We want
   // /start to return immediately so the caller can poll for QR.
   client.initialize().catch((e) => {
+    console.error(`[laravel-wa-sidecar] initialize() failed for session ${sessionId}: ${e.stack || e.message}`);
     session.status = 'error';
     broadcast(sessionId, 'error', { message: e.message });
   });
