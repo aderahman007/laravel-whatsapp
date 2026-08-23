@@ -116,7 +116,7 @@ async function bootSession(sessionId) {
     },
   });
 
-  const session = { client, status: 'initializing', qrDataUri: null, subscribers: new Set() };
+  const session = { client, status: 'initializing', qrDataUri: null, subscribers: new Set(), stateCheckInterval: null };
   sessions.set(sessionId, session);
 
   client.on('qr', async (qr) => {
@@ -177,10 +177,12 @@ async function bootSession(sessionId) {
     }
 
     broadcast(sessionId, 'ready', {});
+    startStateCheck(sessionId, session);
   });
 
   client.on('disconnected', (reason) => {
     session.status = 'disconnected';
+    stopStateCheck(session);
     broadcast(sessionId, 'disconnected', { reason });
   });
 
@@ -213,6 +215,40 @@ async function bootSession(sessionId) {
   });
 
   return session;
+}
+
+// whatsapp-web.js's `disconnected` event is push-based and, in practice,
+// doesn't reliably fire when the phone unlinks this device remotely (vs. a
+// local client.destroy()/logout()) — the page-side socket can sit in
+// UNPAIRED/UNPAIRED_IDLE without ever emitting the event, so `status` stays
+// stuck on 'ready' indefinitely. `client.getState()` reads the live socket
+// state directly instead of waiting for a push, so we poll it periodically
+// while a session is 'ready' as a backstop for exactly this case.
+const STATE_CHECK_INTERVAL_MS = 30_000;
+
+function startStateCheck(sessionId, session) {
+  stopStateCheck(session);
+  session.stateCheckInterval = setInterval(async () => {
+    if (session.status !== 'ready') return;
+    let state;
+    try {
+      state = await session.client.getState();
+    } catch (_) {
+      return; // transient page/CDP hiccup — don't flip status on a failed check
+    }
+    if (state && state !== 'CONNECTED') {
+      session.status = 'disconnected';
+      stopStateCheck(session);
+      broadcast(sessionId, 'disconnected', { reason: `state_check:${state}` });
+    }
+  }, STATE_CHECK_INTERVAL_MS);
+}
+
+function stopStateCheck(session) {
+  if (session.stateCheckInterval) {
+    clearInterval(session.stateCheckInterval);
+    session.stateCheckInterval = null;
+  }
 }
 
 async function autoStartPersistedSessions() {
@@ -270,6 +306,7 @@ app.post('/sessions/:id/start', async (req, res, next) => {
 app.post('/sessions/:id/stop', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
+    stopStateCheck(s);
     try { await s.client.destroy(); } catch (_) { /* already gone */ }
     sessions.delete(req.params.id);
     res.json({ ok: true });
@@ -279,7 +316,7 @@ app.post('/sessions/:id/stop', async (req, res, next) => {
 app.delete('/sessions/:id', async (req, res, next) => {
   try {
     const s = sessions.get(req.params.id);
-    if (s) { try { await s.client.destroy(); } catch (_) {} sessions.delete(req.params.id); }
+    if (s) { stopStateCheck(s); try { await s.client.destroy(); } catch (_) {} sessions.delete(req.params.id); }
     // Also wipe persisted auth so next start triggers a fresh QR.
     const authDir = path.join(SESSION_DIR, `session-${req.params.id}`);
     if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
