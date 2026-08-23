@@ -8,6 +8,7 @@ use Kstmostofa\LaravelWhatsApp\Models\Concerns\UsesWhatsAppConnection;
 /**
  * @property int $id
  * @property string $session_id
+ * @property ?int $user_id
  * @property string $wa_id
  * @property ?string $name
  * @property ?string $pushname
@@ -37,5 +38,15 @@ class WaContact extends Model
     public function session()
     {
         return $this->belongsTo(WaSession::class, 'session_id');
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(\App\Models\User::class);
+    }
+
+    public function categories()
+    {
+        return $this->belongsToMany(\App\Models\WaContactCategory::class, 'wa_contact_category_contact', 'contact_id', 'category_id');
     }
 }
