@@ -360,11 +360,11 @@ app.post('/sessions/:id/messages', async (req, res, next) => {
     let result;
     switch (b.type) {
       case 'text':
-        result = await s.client.sendMessage(to, b.body ?? '', b.quotedMessageId ? { quotedMessageId: b.quotedMessageId } : {});
+        result = await withFrameRetry(() => s.client.sendMessage(to, b.body ?? '', b.quotedMessageId ? { quotedMessageId: b.quotedMessageId } : {}));
         break;
 
       case 'reply':
-        result = await s.client.sendMessage(to, b.body ?? '', { quotedMessageId: b.quotedMessageId });
+        result = await withFrameRetry(() => s.client.sendMessage(to, b.body ?? '', { quotedMessageId: b.quotedMessageId }));
         break;
 
       case 'image':
@@ -379,12 +379,12 @@ app.post('/sessions/:id/messages', async (req, res, next) => {
           sendMediaAsDocument: b.type === 'document',
           sendAudioAsVoice: b.sendAudioAsVoice === true && b.type === 'audio',
         };
-        result = await s.client.sendMessage(to, media, options);
+        result = await withFrameRetry(() => s.client.sendMessage(to, media, options));
         break;
       }
 
       case 'location':
-        result = await s.client.sendMessage(to, new Location(b.latitude, b.longitude, b.description));
+        result = await withFrameRetry(() => s.client.sendMessage(to, new Location(b.latitude, b.longitude, b.description)));
         break;
 
       case 'reaction': {
@@ -507,7 +507,7 @@ app.post('/sessions/:id/messages/:messageId/delete', async (req, res, next) => {
     const s = getSession(req.params.id);
     requireReady(s);
     const msg = await getMessageByIdPatched(s.client, req.params.messageId);
-    await msg.delete(req.body?.forEveryone === true);
+    await withFrameRetry(() => msg.delete(req.body?.forEveryone === true));
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
@@ -516,7 +516,7 @@ app.get('/sessions/:id/chats', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const chats = await s.client.getChats();
+    const chats = await withFrameRetry(() => s.client.getChats());
     res.json(chats.map((c) => ({
       id: c.id._serialized,
       name: c.name,
@@ -537,7 +537,7 @@ app.get('/sessions/:id/chats/:chatId/messages', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const chat = await s.client.getChatById(req.params.chatId);
+    const chat = await withFrameRetry(() => s.client.getChatById(req.params.chatId));
     if (!chat) return res.status(404).json({ error: 'chat not found' });
 
     if (String(req.query.sync).toLowerCase() === 'true') {
@@ -549,7 +549,7 @@ app.get('/sessions/:id/chats/:chatId/messages', async (req, res, next) => {
     }
 
     const limit = parseInt(req.query.limit, 10) || 50;
-    const messages = await chat.fetchMessages({ limit });
+    const messages = await withFrameRetry(() => chat.fetchMessages({ limit }));
     res.json({ messages: messages.map(serializeMessage) });
   } catch (e) { next(e); }
 });
@@ -558,7 +558,7 @@ app.get('/sessions/:id/groups', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const chats = await s.client.getChats();
+    const chats = await withFrameRetry(() => s.client.getChats());
     res.json(chats.filter((c) => c.isGroup).map((c) => ({
       id: c.id._serialized,
       name: c.name,
@@ -577,7 +577,7 @@ app.post('/sessions/:id/groups', async (req, res, next) => {
     const s = getSession(req.params.id);
     requireReady(s);
     const { name, participants } = req.body;
-    const group = await s.client.createGroup(name, participants);
+    const group = await withFrameRetry(() => s.client.createGroup(name, participants));
     res.json(group);
   } catch (e) { next(e); }
 });
@@ -586,8 +586,8 @@ app.post('/sessions/:id/groups/:groupId/participants/add', async (req, res, next
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const chat = await s.client.getChatById(req.params.groupId);
-    const result = await chat.addParticipants(req.body.participants || []);
+    const chat = await withFrameRetry(() => s.client.getChatById(req.params.groupId));
+    const result = await withFrameRetry(() => chat.addParticipants(req.body.participants || []));
     res.json(result);
   } catch (e) { next(e); }
 });
@@ -596,8 +596,8 @@ app.post('/sessions/:id/groups/:groupId/participants/remove', async (req, res, n
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const chat = await s.client.getChatById(req.params.groupId);
-    const result = await chat.removeParticipants(req.body.participants || []);
+    const chat = await withFrameRetry(() => s.client.getChatById(req.params.groupId));
+    const result = await withFrameRetry(() => chat.removeParticipants(req.body.participants || []));
     res.json(result);
   } catch (e) { next(e); }
 });
@@ -606,8 +606,8 @@ app.post('/sessions/:id/groups/:groupId/leave', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const chat = await s.client.getChatById(req.params.groupId);
-    await chat.leave();
+    const chat = await withFrameRetry(() => s.client.getChatById(req.params.groupId));
+    await withFrameRetry(() => chat.leave());
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
@@ -616,8 +616,8 @@ app.put('/sessions/:id/groups/:groupId/subject', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const chat = await s.client.getChatById(req.params.groupId);
-    await chat.setSubject(req.body.subject || '');
+    const chat = await withFrameRetry(() => s.client.getChatById(req.params.groupId));
+    await withFrameRetry(() => chat.setSubject(req.body.subject || ''));
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
@@ -626,7 +626,7 @@ app.get('/sessions/:id/contacts', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const contacts = await s.client.getContacts();
+    const contacts = await withFrameRetry(() => s.client.getContacts());
     res.json(contacts.map((c) => ({
       id: c.id._serialized,
       name: c.name,
@@ -645,7 +645,7 @@ app.get('/sessions/:id/contacts/:contactId', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const contact = await s.client.getContactById(req.params.contactId);
+    const contact = await withFrameRetry(() => s.client.getContactById(req.params.contactId));
     res.json(contact);
   } catch (e) { next(e); }
 });
@@ -654,7 +654,7 @@ app.get('/sessions/:id/contacts/:number/exists', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
-    const exists = await s.client.isRegisteredUser(req.params.number);
+    const exists = await withFrameRetry(() => s.client.isRegisteredUser(req.params.number));
     res.json({ number: req.params.number, exists });
   } catch (e) { next(e); }
 });
@@ -667,6 +667,27 @@ function withTimeout(promise, ms) {
     promise.catch(() => null),
     new Promise(resolve => setTimeout(() => resolve(null), ms)),
   ]);
+}
+
+// WhatsApp Web can reload its page internally (reconnect/resync) while
+// Puppeteer is mid `page.evaluate()` — nearly every whatsapp-web.js Client/
+// Chat method goes through that, so any of them can throw "Attempted to use
+// detached Frame" or "Execution context was destroyed" at that exact
+// moment. It's transient (the reload finishes in well under a second) —
+// one retry after a short delay clears it without masking a real failure
+// (still throws normally, no unbounded retry loop — see downloadMessageMedia()
+// above for the same shape applied to a different transient error).
+async function withFrameRetry(fn, { retries = 1, delayMs = 800 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const transient = /detached Frame|Execution context was destroyed|Cannot find context/i.test(e.message || '');
+      if (!transient || attempt >= retries) throw e;
+      console.error(`[laravel-wa-sidecar] transient Puppeteer error, retrying (${attempt + 1}/${retries}): ${e.message}`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
 }
 
 // Stream a contact's WhatsApp profile picture. Returns 404 if the contact
@@ -702,7 +723,7 @@ app.post('/sessions/:id/messages/:messageId/edit', async (req, res, next) => {
     const msg = await getMessageByIdPatched(s.client, req.params.messageId);
     if (!msg) return res.status(404).json({ error: 'message not found' });
     const body = req.body?.body ?? '';
-    const result = await msg.edit(body);
+    const result = await withFrameRetry(() => msg.edit(body));
     res.json(serializeMessage(result) || { ok: true });
   } catch (e) { next(e); }
 });
@@ -728,13 +749,13 @@ app.post('/sessions/:id/status', async (req, res, next) => {
         const options = {};
         if (b.backgroundColor) options.backgroundColor = b.backgroundColor;
         if (typeof b.font === 'number') options.font = b.font;
-        result = await s.client.sendMessage('status@broadcast', b.body ?? '', options);
+        result = await withFrameRetry(() => s.client.sendMessage('status@broadcast', b.body ?? '', options));
         break;
       }
       case 'image':
       case 'video': {
         const media = await buildOutgoingMedia(b);
-        result = await s.client.sendMessage('status@broadcast', media, { caption: b.caption });
+        result = await withFrameRetry(() => s.client.sendMessage('status@broadcast', media, { caption: b.caption }));
         break;
       }
       default:
