@@ -567,16 +567,19 @@ app.get('/sessions/:id/chats/:chatId/messages', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Shows the "typing…" indicator to the chat. Best-effort/cosmetic (used to
-// make auto-reply delays feel like a human is composing) — WhatsApp Web
-// clears it automatically after ~25s or once a message is actually sent, so
-// callers don't need a matching "stop typing" call for normal-length delays.
+// Marks the chat read, then shows the "typing…" indicator — mirrors how a
+// human actually opens a chat (read receipt) before composing a reply.
+// Best-effort/cosmetic (used to make auto-reply delays feel like a human is
+// typing) — WhatsApp Web clears the typing state automatically after ~25s or
+// once a message is actually sent, so callers don't need a matching "stop
+// typing" call as long as they call this shortly before actually sending.
 app.post('/sessions/:id/chats/:chatId/typing', async (req, res, next) => {
   try {
     const s = getSession(req.params.id);
     requireReady(s);
     const chat = await withFrameRetry(req.params.id, () => s.client.getChatById(req.params.chatId));
     if (!chat) return res.status(404).json({ error: 'chat not found' });
+    await withFrameRetry(req.params.id, () => chat.sendSeen());
     await withFrameRetry(req.params.id, () => chat.sendStateTyping());
     res.json({ ok: true });
   } catch (e) { next(e); }
