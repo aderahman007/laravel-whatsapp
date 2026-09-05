@@ -716,7 +716,22 @@ async function recoverSession(sessionId) {
     const s = sessions.get(sessionId);
     if (s) {
       stopStateCheck(s);
+      // Grab the underlying Chromium child process BEFORE calling destroy() —
+      // client.destroy() only calls browser.close() when browser.isConnected()
+      // is still true (see whatsapp-web.js Client.js), but "frame permanently
+      // detached" often means the CDP connection is already down, so
+      // destroy() silently no-ops on the browser-closing part and the old
+      // Chromium process is left running, still holding the profile dir's
+      // singleton lock — the next bootSession() then fails with "browser
+      // already running" (hit this in production before this fix).
+      const proc = s.client.pupBrowser?.process?.();
       try { await s.client.destroy(); } catch (_) { /* already broken */ }
+      if (proc && proc.pid && proc.exitCode === null) {
+        try {
+          process.kill(proc.pid, 'SIGKILL');
+          await new Promise((resolve) => proc.once('exit', resolve));
+        } catch (_) { /* already gone */ }
+      }
       sessions.delete(sessionId);
     }
     await bootSession(sessionId);
